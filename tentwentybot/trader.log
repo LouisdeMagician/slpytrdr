@@ -1,7 +1,34 @@
-2025-03-29 09:37:25,858 - trader - INFO - 🚀 Trading Bot Active
-2025-03-29 09:46:14,411 - trader - ERROR - Telegram command handling failed: 'NoneType' object has no attribute 'split'
+2025-03-29 17:56:52,630 - trader - INFO - 🚀 Trading Bot Active
+2025-03-29 17:57:00,146 - trader - INFO - Initiating buy order for Fm9mu7XHP4eZZuyKDJ5LpNv6tvzb2uP7Gb2McZ3J9HDs
+2025-03-29 17:57:00,198 - trader - ERROR - Buy transaction failed: 400, message='Bad Request', url='https://quote-api.jup.ag/v6/quote?inputMint=So11111111111111111111111111111111111111112&outputMint=Fm9mu7XHP4eZZuyKDJ5LpNv6tvzb2uP7Gb2McZ3J9HDs&amount=100000000&slippageBps=500'
 Traceback (most recent call last):
-  File "/workspaces/slpytrdr/tentwentybot/tentwentybot.py", line 217, in handle_telegram_command
-    allowed_users = os.getenv("ALLOWED_USER_IDS").split(",")
-                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-AttributeError: 'NoneType' object has no attribute 'split'
+  File "/workspaces/slpytrdr/tentwentybot/tentwentybot.py", line 106, in _execute_buy_transaction
+    quote.raise_for_status()
+  File "/usr/local/python/3.12.1/lib/python3.12/site-packages/aiohttp/client_reqrep.py", line 1161, in raise_for_status
+    raise ClientResponseError(
+aiohttp.client_exceptions.ClientResponseError: 400, message='Bad Request', url='https://quote-api.jup.ag/v6/quote?inputMint=So11111111111111111111111111111111111111112&outputMint=Fm9mu7XHP4eZZuyKDJ5LpNv6tvzb2uP7Gb2McZ3J9HDs&amount=100000000&slippageBps=500'
+2025-03-29 17:57:00,198 - trader - CRITICAL - Buy execution failed: 400, message='Bad Request', url='https://quote-api.jup.ag/v6/quote?inputMint=So11111111111111111111111111111111111111112&outputMint=Fm9mu7XHP4eZZuyKDJ5LpNv6tvzb2uP7Gb2McZ3J9HDs&amount=100000000&slippageBps=500'
+Traceback (most recent call last):
+  File "/workspaces/slpytrdr/tentwentybot/tentwentybot.py", line 84, in execute_buy
+    buy_tx = await self._execute_buy_transaction(token_address)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/workspaces/slpytrdr/tentwentybot/tentwentybot.py", line 106, in _execute_buy_transaction
+    quote.raise_for_status()
+  File "/usr/local/python/3.12.1/lib/python3.12/site-packages/aiohttp/client_reqrep.py", line 1161, in raise_for_status
+    raise ClientResponseError(
+aiohttp.client_exceptions.ClientResponseError: 400, message='Bad Request', url='https://quote-api.jup.ag/v6/quote?inputMint=So11111111111111111111111111111111111111112&outputMint=Fm9mu7XHP4eZZuyKDJ5LpNv6tvzb2uP7Gb2McZ3J9HDs&amount=100000000&slippageBps=500'
+2025-03-29 17:57:06,924 - trader - CRITICAL - Bot startup failed: Cannot close a running event loop
+Traceback (most recent call last):
+  File "/workspaces/slpytrdr/tentwentybot/tentwentybot.py", line 205, in main
+    await app.run_polling()
+          ^^^^^^^^^^^^^^^^^
+  File "/usr/local/python/3.12.1/lib/python3.12/site-packages/telegram/ext/_application.py", line 832, in run_polling
+    return self.__run(
+           ^^^^^^^^^^^
+  File "/usr/local/python/3.12.1/lib/python3.12/site-packages/telegram/ext/_application.py", line 1072, in __run
+    loop.close()
+  File "/usr/local/python/3.12.1/lib/python3.12/asyncio/unix_events.py", line 68, in close
+    super().close()
+  File "/usr/local/python/3.12.1/lib/python3.12/asyncio/selector_events.py", line 101, in close
+    raise RuntimeError("Cannot close a running event loop")
+RuntimeError: Cannot close a running event loop

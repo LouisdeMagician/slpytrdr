@@ -3,6 +3,7 @@ import json
 import base64
 import logging
 import aiohttp
+import asyncio
 from decimal import Decimal
 from dotenv import load_dotenv
 from solana.rpc.async_api import AsyncClient
@@ -13,24 +14,26 @@ from solders.pubkey import Pubkey
 from telegram import Update
 from telegram.ext import Application, MessageHandler, filters
 from monitor import TradingMonitor
+import nest_asyncio
+import re
 
-# Configure module-specific logger
+nest_asyncio.apply()
+
+# Configure logging
 logger = logging.getLogger('trader')
 logger.setLevel(logging.INFO)
 
-# Configure file handler from environment
 log_file = os.getenv("TRADER_LOG_FILE", "trader.log")
 file_handler = logging.FileHandler(log_file)
-file_handler.setFormatter(logging.Formatter(
-    '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-))
+file_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
 logger.addHandler(file_handler)
 
 # Load environment variables
 load_dotenv()
 JUPITER_API_URL = "https://quote-api.jup.ag/v6"
-PUMPFUN_DECIMALS = 6  # All Pump.fun tokens use 6 decimals
-
+PUMPFUN_DECIMALS = 6  
+SLIPPAGE_BPS = int(os.getenv("SLIPPAGE_BPS", "500"))  
+SLIPPAGE_BPS_SELL = int(os.getenv("SLIPPAGE_BPS_SELL", "1000")) 
 
 class JupiterTrader:
     def __init__(self, rpc_url: str, wallet: Keypair):
@@ -38,6 +41,7 @@ class JupiterTrader:
         self.wallet = wallet
         self.http_session = aiohttp.ClientSession()
         self.monitor = TradingMonitor(self)
+        self.token_address = None
         logger.debug("Initialized JupiterTrader with RPC: %s", rpc_url)
 
     async def __aenter__(self):
@@ -46,11 +50,11 @@ class JupiterTrader:
     async def __aexit__(self, *exc):
         await self.client.close()
         await self.http_session.close()
-        await self.monitor.close()
+        if self.monitor:
+            await self.monitor.stop_all()
         logger.debug("Closed JupiterTrader resources")
 
     async def _get_execution_price(self, token_address: str) -> Decimal:
-        """Calculate actual entry price based on executed trade"""
         try:
             logger.debug("Getting execution price for %s", token_address)
             token_account = await self.client.get_token_accounts_by_owner(
@@ -58,14 +62,10 @@ class JupiterTrader:
                 mint=Pubkey.from_string(token_address),
                 commitment=Confirmed
             )
-            
             if not token_account.value:
                 raise ValueError("Token account not found")
 
-            balance = await self.client.get_token_account_balance(
-                token_account.value[0].pubkey,
-                commitment=Confirmed
-            )
+            balance = await self.client.get_token_account_balance(token_account.value[0].pubkey, commitment=Confirmed)
             token_amount = Decimal(balance.value.amount) / Decimal(10**PUMPFUN_DECIMALS)
 
             if token_amount == 0:
@@ -74,149 +74,109 @@ class JupiterTrader:
             return Decimal('0.1') / token_amount
 
         except Exception as e:
-            logger.error("Price calculation failed for %s: %s", token_address, str(e), exc_info=True)
-            raise RuntimeError(f"Price calculation failed: {str(e)}") from e
+            logger.error("Price calculation failed: %s", str(e), exc_info=True)
+            raise
 
     async def execute_buy(self, token_address: str) -> str:
-        """Execute SOL to token swap with integrated monitoring"""
+        """Executes a buy order and sets up monitoring."""
         try:
             logger.info("Initiating buy order for %s", token_address)
             buy_tx = await self._execute_buy_transaction(token_address)
-            await self._setup_position_monitoring(token_address)
-            logger.info("Buy order executed successfully for %s: %s", token_address, buy_tx)
-            return buy_tx
+            if buy_tx:
+                self.token_address = token_address  
+                await self._setup_position_monitoring(token_address)
+                logger.info("Buy order successful for %s: %s", token_address, buy_tx)
+                return buy_tx
+            raise RuntimeError("Buy transaction failed")
 
         except Exception as e:
-            logger.critical("Buy execution failed for %s: %s", token_address, str(e), exc_info=True)
+            logger.critical("Buy execution failed: %s", str(e), exc_info=True)
             await self.monitor.stop_monitoring(token_address)
             raise
 
     async def _execute_buy_transaction(self, token_address: str) -> str:
-        """Core buy transaction logic"""
         try:
             logger.debug("Fetching buy quote for %s", token_address)
-            async with self.http_session.get(
-                f"{JUPITER_API_URL}/quote",
-                params={
-                    "inputMint": "So11111111111111111111111111111111111111112",
-                    "outputMint": token_address,
-                    "amount": str(int(Decimal('0.1') * 10**9)),
-                    "slippageBps": "500"
-                }
-            ) as quote:
+            async with self.http_session.get(f"{JUPITER_API_URL}/quote", params={
+                "inputMint": "So11111111111111111111111111111111111111112",
+                "outputMint": token_address,
+                "amount": str(int(Decimal('0.1') * 10**9)),
+                "slippageBps": str(SLIPPAGE_BPS)
+            }) as quote:
                 quote.raise_for_status()
                 quote_data = await quote.json()
 
             logger.debug("Creating swap transaction for %s", token_address)
-            async with self.http_session.post(
-                f"{JUPITER_API_URL}/swap",
-                json={
-                    "quoteResponse": quote_data,
-                    "userPublicKey": str(self.wallet.pubkey()),
-                    "dynamicComputeUnitLimit": True,
-                    "prioritizationFeeLamports": {"auto": True},
-                    "wrapAndUnwrapSol": True
-                }
-            ) as swap_tx:
+            async with self.http_session.post(f"{JUPITER_API_URL}/swap", json={
+                "quoteResponse": quote_data,
+                "userPublicKey": str(self.wallet.pubkey()),
+                "dynamicComputeUnitLimit": True,
+                "prioritizationFeeLamports": {"auto": True},
+                "wrapAndUnwrapSol": True
+            }) as swap_tx:
                 swap_tx.raise_for_status()
                 swap_data = await swap_tx.json()
 
-            transaction = VersionedTransaction.deserialize(
-                base64.b64decode(swap_data["swapTransaction"])
-            )
+            transaction = VersionedTransaction.deserialize(base64.b64decode(swap_data["swapTransaction"]))
             transaction.sign([self.wallet])
             result = await self.client.send_transaction(transaction)
-            logger.debug("Transaction submitted for %s: %s", token_address, result.value)
             return result.value
 
         except Exception as e:
-            logger.error("Buy transaction failed for %s: %s", token_address, str(e), exc_info=True)
-            raise
-
-    async def _setup_position_monitoring(self, token_address: str):
-        """Initialize position tracking with TP/SL and time limit"""
-        try:
-            entry_price = await self._get_execution_price(token_address)
-            logger.info("Setting up monitoring for %s at entry price %s", token_address, entry_price)
-            await self.monitor.start_monitoring(
-                token_address=token_address,
-                entry_price=entry_price,
-                take_profit=entry_price * Decimal('1.2'),
-                stop_loss=entry_price * Decimal('0.9'),
-                max_duration=1800
-            )
-        except Exception as e:
-            logger.error("Failed to setup monitoring for %s: %s", token_address, str(e), exc_info=True)
-            await self.execute_sell_all(token_address)
+            logger.error("Buy transaction failed: %s", str(e), exc_info=True)
             raise
 
     async def execute_sell_all(self, token_address: str) -> str:
-        """Execute token to SOL swap with error handling"""
+        """Executes a sell order if a valid token balance exists."""
         try:
             logger.info("Initiating sell order for %s", token_address)
-            token_account = await self.client.get_token_accounts_by_owner(
-                self.wallet.pubkey(),
-                mint=Pubkey.from_string(token_address),
-                commitment=Confirmed
-            )
-            
+            token_account = await self.client.get_token_accounts_by_owner(self.wallet.pubkey(), mint=Pubkey.from_string(token_address), commitment=Confirmed)
             if not token_account.value:
                 raise ValueError("No tokens to sell")
 
-            balance = await self.client.get_token_account_balance(
-                token_account.value[0].pubkey,
-                commitment=Confirmed
-            )
+            balance = await self.client.get_token_account_balance(token_account.value[0].pubkey, commitment=Confirmed)
             raw_amount = int(balance.value.amount)
+            if raw_amount == 0:
+                raise ValueError("Token balance is zero")
 
-            logger.debug("Fetching sell quote for %s", token_address)
-            async with self.http_session.get(
-                f"{JUPITER_API_URL}/quote",
-                params={
-                    "inputMint": token_address,
-                    "outputMint": "So11111111111111111111111111111111111111112",
-                    "amount": str(raw_amount),
-                    "slippageBps": "1000"
-                }
-            ) as quote:
+            async with self.http_session.get(f"{JUPITER_API_URL}/quote", params={
+                "inputMint": token_address,
+                "outputMint": "So11111111111111111111111111111111111111112",
+                "amount": str(raw_amount),
+                "slippageBps": str(SLIPPAGE_BPS_SELL)
+            }) as quote:
                 quote.raise_for_status()
                 quote_data = await quote.json()
 
-            logger.debug("Creating sell transaction for %s", token_address)
-            async with self.http_session.post(
-                f"{JUPITER_API_URL}/swap",
-                json={
-                    "quoteResponse": quote_data,
-                    "userPublicKey": str(self.wallet.pubkey()),
-                    "dynamicComputeUnitLimit": True,
-                    "prioritizationFeeLamports": {"auto": True}
-                }
-            ) as swap_tx:
+            async with self.http_session.post(f"{JUPITER_API_URL}/swap", json={
+                "quoteResponse": quote_data,
+                "userPublicKey": str(self.wallet.pubkey()),
+                "dynamicComputeUnitLimit": True,
+                "prioritizationFeeLamports": {"auto": True}
+            }) as swap_tx:
                 swap_tx.raise_for_status()
                 swap_data = await swap_tx.json()
 
-            transaction = VersionedTransaction.deserialize(
-                base64.b64decode(swap_data["swapTransaction"])
-            )
+            transaction = VersionedTransaction.deserialize(base64.b64decode(swap_data["swapTransaction"]))
             transaction.sign([self.wallet])
             result = await self.client.send_transaction(transaction)
-            logger.info("Sell order executed for %s: %s", token_address, result.value)
             return result.value
 
         except Exception as e:
-            logger.error("Sell transaction failed for %s: %s", token_address, str(e), exc_info=True)
-            raise RuntimeError(f"Sell failed: {str(e)}") from e
-        finally:
-            logger.debug("Stopping monitoring for %s", token_address)
-            self.monitor.stop_monitoring(token_address)
-
+            logger.error("Sell transaction failed: %s", str(e), exc_info=True)
+            raise
 
 async def handle_telegram_command(update: Update, _):
+    """Handles Telegram trade commands with validation."""
     try:
         user_id = str(update.message.from_user.id)
-        allowed_users = os.getenv("ALLOWED_USER_IDS").split(",")
-        
-        if user_id not in allowed_users:
+        allowed_ids = os.getenv("ALLOWED_USER_IDS", "").split(",")
+        user = update.message.from_user
+        allowed_bots = os.getenv("AUTHORIZED_BOTS", "")
+
+        is_authorized_user = str(user_id) in allowed_ids
+        is_authorized_bot = user.is_bot and user.username in allowed_bots
+        if not (is_authorized_user or is_authorized_bot):
             logger.warning("Unauthorized access attempt from user %s", user_id)
             await update.message.reply_text("⛔ Unauthorized")
             return
@@ -226,28 +186,29 @@ async def handle_telegram_command(update: Update, _):
             return
 
         token_address = command.split()[-1]
-        logger.info("Processing trade command for %s from user %s", token_address, user_id)
-        wallet = Keypair.from_bytes(bytes(json.loads(os.getenv("WALLET_KEYPAIR"))))
+        if not re.match(r"^[1-9A-HJ-NP-Za-km-z]{32,44}$", token_address):
+            await update.message.reply_text("❌ Invalid token address format.")
+            return
 
-        async with JupiterTrader(os.getenv("SOLANA_RPC_URL"), wallet) as trader:
+        async with JupiterTrader(os.getenv("SOLANA_RPC_URL"), Keypair.from_bytes(bytes(json.loads(os.getenv("WALLET_KEYPAIR"))))) as trader:
             buy_tx = await trader.execute_buy(token_address)
-            response_text = (
-                f"✅ Buy executed: https://solscan.io/tx/{buy_tx}\n"
-                f"⏱ Monitoring started (TP/SL/30min)"
-            )
-            await update.message.reply_text(response_text)
-            logger.info("Successfully processed trade for %s", token_address)
+            await update.message.reply_text(f"✅ Buy executed: https://solscan.io/tx/{buy_tx}")
 
     except Exception as e:
-        logger.error("Telegram command handling failed: %s", str(e), exc_info=True)
         await update.message.reply_text(f"❌ Error: {str(e)}")
 
-if __name__ == "__main__":
+async def main():
     try:
         app = Application.builder().token(os.getenv("TELEGRAM_BOT_TOKEN")).build()
         app.add_handler(MessageHandler(filters.TEXT & filters.Regex(r"^/trade "), handle_telegram_command))
         logger.info("🚀 Trading Bot Active")
-        app.run_polling()
+        await app.run_polling()
+    except KeyboardInterrupt:
+        logger.info("🛑 Bot shutting down gracefully...")
+        await app.shutdown()   
     except Exception as e:
         logger.critical("Bot startup failed: %s", str(e), exc_info=True)
         raise
+
+if __name__ == "__main__":
+    asyncio.run(main())
