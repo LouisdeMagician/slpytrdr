@@ -1,0 +1,6 @@
+aiohttp
+python-dotenv
+solana
+solders
+python-telegram-bot
+    

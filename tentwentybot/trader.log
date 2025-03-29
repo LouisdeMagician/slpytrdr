@@ -1,0 +1,7 @@
+2025-03-29 09:37:25,858 - trader - INFO - 🚀 Trading Bot Active
+2025-03-29 09:46:14,411 - trader - ERROR - Telegram command handling failed: 'NoneType' object has no attribute 'split'
+Traceback (most recent call last):
+  File "/workspaces/slpytrdr/tentwentybot/tentwentybot.py", line 217, in handle_telegram_command
+    allowed_users = os.getenv("ALLOWED_USER_IDS").split(",")
+                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'NoneType' object has no attribute 'split'
