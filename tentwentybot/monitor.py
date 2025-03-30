@@ -1,17 +1,15 @@
-# monitor.py
 import os
 import time
 import asyncio
-import aiohttp
 import logging
 from decimal import Decimal
 from typing import Optional
+from moralis import sol_api  # Moralis API for Solana
+from dotenv import load_dotenv
 
 # Configure module-specific logger
 logger = logging.getLogger('monitor')
 logger.setLevel(logging.INFO)
-
-# Configure file handler from environment
 log_file = os.getenv("MONITOR_LOG_FILE", "monitor.log")
 file_handler = logging.FileHandler(log_file)
 file_handler.setFormatter(logging.Formatter(
@@ -19,68 +17,46 @@ file_handler.setFormatter(logging.Formatter(
 ))
 logger.addHandler(file_handler)
 
-MAX_DURATION = 1800
-
+MAX_DURATION = 1800  # 30 min max duration
+DEFAULT_SUPPLY = Decimal("1000000000")  # 1 Billion token supply
+load_dotenv()
 
 class PriceMonitor:
     def __init__(self):
-        self.jupiter_session = aiohttp.ClientSession()
-        self.birdeye_session = aiohttp.ClientSession(
-            headers={"X-API-KEY": os.getenv("BIRDEYE_API_KEY", "")}
-        )
+        self.api_key = os.getenv("MORALIS_API_KEY", "")
+        if not self.api_key:
+            logger.error("MORALIS_API_KEY is not set!")
         self.rate_limiter = asyncio.Semaphore(30)
-        logger.debug("Initialized PriceMonitor")
+        logger.debug("Initialized PriceMonitor with Moralis API key.")
 
     async def close(self):
-        await self.jupiter_session.close()
-        await self.birdeye_session.close()
-        logger.debug("Closed PriceMonitor resources")
+        # No persistent session to close in Moralis SDK; pass.
+        logger.debug("PriceMonitor cleanup complete.")
 
     async def get_price(self, token_address: str) -> Optional[Decimal]:
-        """Hybrid price check with fallback logic"""
-        logger.debug("Fetching price for %s", token_address)
-        price = await self._get_jupiter_price(token_address)
-        if not price:
-            price = await self._get_birdeye_price(token_address)
-        return price
-
-    async def _get_jupiter_price(self, token_address: str) -> Optional[Decimal]:
-        """Use Jupiter's price API v2"""
+        """Fetch token price using Moralis API."""
+        logger.debug("Fetching price for %s using Moralis API", token_address)
+        loop = asyncio.get_running_loop()
         async with self.rate_limiter:
             try:
-                logger.debug("Checking Jupiter price for %s", token_address)
-                async with self.jupiter_session.get(
-                    "https://api.jup.ag/price/v2",
-                    params={
-                        "ids": token_address,
-                        "vsToken": "So11111111111111111111111111111111111111112",
-                        "showExtraInfo": "true"
-                    }
-                ) as resp:
-                    data = (await resp.json())["data"]
-                    return Decimal(data[token_address]["price"])
+                # Moralis sol_api.token.get_token_price is a synchronous call,
+                # so we wrap it in run_in_executor to avoid blocking the event loop.
+                params = {"network": "mainnet", "address": token_address}
+                result = await loop.run_in_executor(None, sol_api.token.get_token_price, self.api_key, params)
+                if "usdPrice" not in result:
+                    logger.error(f"Moralis API response missing 'usdPrice' for {token_address}: {result}")
+                    return None
+                price = Decimal(str(result["usdPrice"]))
+                logger.info(f"✅ [Moralis] {token_address} Price: ${price}")
+                return price
             except Exception as e:
-                logger.error("Jupiter price error: %s", str(e), exc_info=True)
+                logger.error(f"Moralis API error for {token_address}: {e}", exc_info=True)
                 return None
-
-    async def _get_birdeye_price(self, token_address: str) -> Optional[Decimal]:
-        """Fallback to BirdEye's free tier API"""
-        try:
-            logger.debug("Checking BirdEye price for %s", token_address)
-            async with self.birdeye_session.get(
-                "https://public-api.birdeye.so/public/price",
-                params={"address": token_address}
-            ) as resp:
-                data = await resp.json()
-                return Decimal(data["data"]["value"])
-        except Exception as e:
-            logger.error("BirdEye price error: %s", str(e), exc_info=True)
-            return None
 
 
 class TradingMonitor:
-    def __init__(self, trader, poll_interval: int = 5, max_retries: int = 3):
-        self.trader = trader
+    def __init__(self, trader=None, poll_interval: int = 5, max_retries: int = 3):
+        self.trader = trader  # trader reference (unused in monitor-only mode)
         self.monitor = PriceMonitor()
         self.poll_interval = poll_interval
         self.max_retries = max_retries
@@ -90,24 +66,39 @@ class TradingMonitor:
     async def start_monitoring(
         self,
         token_address: str,
-        entry_price: Decimal,
-        take_profit: Decimal,
-        stop_loss: Decimal,
-        max_duration: int = 1800
+        entry_mcap: Decimal,
+        tp_multiplier: Decimal = Decimal("1.2"),
+        sl_multiplier: Decimal = Decimal("0.9"),
+        max_duration: int = MAX_DURATION
     ):
-        """Start monitoring with time-based exit"""
-        logger.info("Starting monitoring for %s", token_address)
+        """
+        Start monitoring a token's price using MCAP-based TP/SL logic.
+        Calculation:
+          entry_price = entry_mcap / DEFAULT_SUPPLY
+          Take Profit MCAP = entry_mcap * tp_multiplier
+          Stop Loss MCAP = entry_mcap * sl_multiplier
+        """
+        entry_price = entry_mcap / DEFAULT_SUPPLY
+        take_profit_mcap = entry_mcap * tp_multiplier
+        stop_loss_mcap = entry_mcap * sl_multiplier
+        take_profit_price = take_profit_mcap / DEFAULT_SUPPLY
+        stop_loss_price = stop_loss_mcap / DEFAULT_SUPPLY
+
         self.active_monitors[token_address] = {
-            "entry": entry_price,
-            "tp": take_profit,
-            "sl": stop_loss,
+            "entry_mcap": entry_mcap,
+            "entry_price": entry_price,
+            "tp_mcap": take_profit_mcap,
+            "sl_mcap": stop_loss_mcap,
+            "tp_price": take_profit_price,
+            "sl_price": stop_loss_price,
             "start_time": time.time(),
             "max_duration": max_duration
         }
+        logger.info(f"Starting monitoring for {token_address} | Entry MCAP: ${entry_mcap:,}")
         asyncio.create_task(self._monitor_loop(token_address))
 
     async def _monitor_loop(self, token_address: str):
-        """Main monitoring loop with time check"""
+        """Main monitoring loop: checks price and prints trigger info."""
         logger.debug("Starting monitor loop for %s", token_address)
         config = self.active_monitors.get(token_address)
         if not config:
@@ -120,60 +111,70 @@ class TradingMonitor:
                 elapsed = current_time - config["start_time"]
 
                 if elapsed > config["max_duration"]:
-                    logger.info("Time limit reached for %s", token_address)
-                    await self._safe_liquidate(token_address)
+                    print(f"⏳ Time limit reached for {token_address}, stopping monitor.")
                     break
 
                 current_price = await self.monitor.get_price(token_address)
                 if not current_price:
                     retries += 1
                     if retries >= self.max_retries:
-                        logger.warning("Max retries reached for %s", token_address)
-                        await self._safe_liquidate(token_address)
+                        print(f"⚠️ Max retries reached for {token_address}, stopping monitor.")
                         break
                     continue
 
                 retries = 0
-                await self._check_triggers(
-                    token_address,
-                    current_price,
-                    config["tp"],
-                    config["sl"]
+                current_mcap = (current_price * DEFAULT_SUPPLY).quantize(Decimal("1"))
+                self._print_monitor_status(
+                    token_address, current_price, current_mcap,
+                    config["tp_mcap"], config["sl_mcap"]
                 )
-
             except Exception as e:
-                logger.error("Monitoring error: %s", str(e), exc_info=True)
-
+                print(f"❌ Monitoring error for {token_address}: {e}")
             await asyncio.sleep(self.poll_interval)
 
-    async def _check_triggers(
-        self,
-        token_address: str,
-        current_price: Decimal,
-        take_profit: Decimal,
-        stop_loss: Decimal
-    ):
-        """Evaluate TP/SL conditions"""
-        logger.debug("Checking triggers for %s @ %s", token_address, current_price)
-        if current_price >= take_profit:
-            logger.info("Take profit triggered @ %s for %s", current_price, token_address)
-            await self._safe_liquidate(token_address)
-        elif current_price <= stop_loss:
-            logger.info("Stop loss triggered @ %s for %s", current_price, token_address)
-            await self._safe_liquidate(token_address)
+    def _print_monitor_status(self, token_address, price, mcap, take_profit_mcap, stop_loss_mcap):
+        """Print rich trigger info based on current MCAP."""
+        tp_triggered = mcap >= take_profit_mcap
+        sl_triggered = mcap <= stop_loss_mcap
 
-    async def _safe_liquidate(self, token_address: str):
-        """Handle position liquidation with cleanup"""
-        logger.info("Initiating liquidation for %s", token_address)
-        try:
-            await self.trader.execute_sell_all(token_address)
-            self.stop_monitoring(token_address)
-            logger.info("Successfully liquidated %s", token_address)
-        except Exception as e:
-            logger.error("Liquidation failed for %s: %s", token_address, str(e), exc_info=True)
+        print(f"\n📊 **Monitoring {token_address}**")
+        print(f"   🔹 Price: ${price:.8f}")
+        print(f"   🔹 Estimated MCAP: ${mcap:,}")
+        print(f"   🔹 Take Profit MCAP: ${take_profit_mcap:,} {'✅ TRIGGERED' if tp_triggered else ''}")
+        print(f"   🔹 Stop Loss MCAP: ${stop_loss_mcap:,} {'✅ TRIGGERED' if sl_triggered else ''}")
 
     def stop_monitoring(self, token_address: str):
-        """Stop monitoring a token position"""
+        """Stop monitoring a token position."""
         logger.info("Stopping monitoring for %s", token_address)
         if token_address in self.active_monitors:
             del self.active_monitors[token_address]
+            print(f"🛑 Stopped monitoring {token_address}")
+
+
+# Example Execution Code (for testing in a script)
+async def main():
+    # Retrieve Moralis API key from environment
+    api_key = os.getenv("MORALIS_API_KEY", "")
+    if not api_key:
+        logger.error("MORALIS_API_KEY is not set. Exiting.")
+        return
+
+    monitor = TradingMonitor(poll_interval=5, max_retries=3)
+
+    # Define tokens with their entry MCAP values (in USD)
+    tokens = {
+        "DqHJFnU2KqC6B2qskERJjkPqhFS4FY2xaxgEfjUVp7ng": Decimal(1500000),   # e.g., $40K
+        "EoMCnTbqt2metzoCXcGFyQf5WjSFZXX6sraBH9tFpump": Decimal(63000),  # e.g., $105K
+    }
+
+    # Start monitoring each token (MCAP-based thresholds)
+    for token, entry_mcap in tokens.items():
+        await monitor.start_monitoring(token, entry_mcap)
+
+    # Let the monitoring run for a period (e.g., 3 minutes)
+    await asyncio.sleep(180)
+    # Cleanup: close the PriceMonitor (if any resources need closing)
+    await monitor.monitor.close()
+
+if __name__ == "__main__":
+    asyncio.run(main())
