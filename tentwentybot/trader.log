@@ -1,25 +1,8 @@
-2025-03-29 17:56:52,630 - trader - INFO - 🚀 Trading Bot Active
-2025-03-29 17:57:00,146 - trader - INFO - Initiating buy order for Fm9mu7XHP4eZZuyKDJ5LpNv6tvzb2uP7Gb2McZ3J9HDs
-2025-03-29 17:57:00,198 - trader - ERROR - Buy transaction failed: 400, message='Bad Request', url='https://quote-api.jup.ag/v6/quote?inputMint=So11111111111111111111111111111111111111112&outputMint=Fm9mu7XHP4eZZuyKDJ5LpNv6tvzb2uP7Gb2McZ3J9HDs&amount=100000000&slippageBps=500'
+2025-04-03 07:54:55,899 - trader - INFO - 🚀 Trading Bot Active
+2025-04-03 08:25:18,983 - trader - INFO - 🚀 Trading Bot Active
+2025-04-03 08:25:32,770 - trader - CRITICAL - Bot startup failed: Cannot close a running event loop
 Traceback (most recent call last):
-  File "/workspaces/slpytrdr/tentwentybot/tentwentybot.py", line 106, in _execute_buy_transaction
-    quote.raise_for_status()
-  File "/usr/local/python/3.12.1/lib/python3.12/site-packages/aiohttp/client_reqrep.py", line 1161, in raise_for_status
-    raise ClientResponseError(
-aiohttp.client_exceptions.ClientResponseError: 400, message='Bad Request', url='https://quote-api.jup.ag/v6/quote?inputMint=So11111111111111111111111111111111111111112&outputMint=Fm9mu7XHP4eZZuyKDJ5LpNv6tvzb2uP7Gb2McZ3J9HDs&amount=100000000&slippageBps=500'
-2025-03-29 17:57:00,198 - trader - CRITICAL - Buy execution failed: 400, message='Bad Request', url='https://quote-api.jup.ag/v6/quote?inputMint=So11111111111111111111111111111111111111112&outputMint=Fm9mu7XHP4eZZuyKDJ5LpNv6tvzb2uP7Gb2McZ3J9HDs&amount=100000000&slippageBps=500'
-Traceback (most recent call last):
-  File "/workspaces/slpytrdr/tentwentybot/tentwentybot.py", line 84, in execute_buy
-    buy_tx = await self._execute_buy_transaction(token_address)
-             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/workspaces/slpytrdr/tentwentybot/tentwentybot.py", line 106, in _execute_buy_transaction
-    quote.raise_for_status()
-  File "/usr/local/python/3.12.1/lib/python3.12/site-packages/aiohttp/client_reqrep.py", line 1161, in raise_for_status
-    raise ClientResponseError(
-aiohttp.client_exceptions.ClientResponseError: 400, message='Bad Request', url='https://quote-api.jup.ag/v6/quote?inputMint=So11111111111111111111111111111111111111112&outputMint=Fm9mu7XHP4eZZuyKDJ5LpNv6tvzb2uP7Gb2McZ3J9HDs&amount=100000000&slippageBps=500'
-2025-03-29 17:57:06,924 - trader - CRITICAL - Bot startup failed: Cannot close a running event loop
-Traceback (most recent call last):
-  File "/workspaces/slpytrdr/tentwentybot/tentwentybot.py", line 205, in main
+  File "/workspaces/slpytrdr/tentwentybot/tentwentybot.py", line 297, in main
     await app.run_polling()
           ^^^^^^^^^^^^^^^^^
   File "/usr/local/python/3.12.1/lib/python3.12/site-packages/telegram/ext/_application.py", line 832, in run_polling

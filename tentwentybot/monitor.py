@@ -7,8 +7,10 @@ from typing import Optional, Dict
 from moralis import sol_api
 import aiohttp
 from dotenv import load_dotenv
-from tentwentybot import JupiterTrader
 from aiohttp import ClientError
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from tentwentybot import JupiterTrader
 
 load_dotenv()
 
@@ -93,7 +95,7 @@ class PriceMonitor:
             logger.error("Error closing PriceMonitor sessions: %s", str(e), exc_info=True)
 
 class TradingMonitor:
-    def __init__(self, trader: JupiterTrader):
+    def __init__(self, trader: 'JupiterTrader'):
         if not isinstance(trader, JupiterTrader):
             raise ValueError("Trader must be an instance of JupiterTrader")
         self.trader = trader

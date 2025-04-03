@@ -19,6 +19,7 @@ import nest_asyncio
 import re
 from aiohttp import ClientError
 from solana.rpc.core import RPCException
+from decimal import ROUND_HALF_UP
 
 nest_asyncio.apply()
 
@@ -104,10 +105,12 @@ class JupiterTrader:
     async def _execute_buy_transaction(self, token_address: str) -> str:
         try:
             logger.debug("Fetching buy quote for %s", token_address)
+            lamports = (TRADE_AMOUNT_SOL * Decimal("1e9")).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+            
             async with self.http_session.get(f"{JUPITER_API_URL}/quote", params={
                 "inputMint": "So11111111111111111111111111111111111111112",
                 "outputMint": token_address,
-                "amount": str(int(TRADE_AMOUNT_SOL * 10**9)),
+                "amount": str(int(lamports)),
                 "slippageBps": str(SLIPPAGE_BPS)
             }) as quote:
                 quote.raise_for_status()
@@ -166,6 +169,7 @@ class JupiterTrader:
                     "inputMint": token_address,
                     "outputMint": "So11111111111111111111111111111111111111112",
                     "amount": str(raw_amount),
+                    "wrapAndUnwrapSol": True,
                     "slippageBps": str(SLIPPAGE_BPS_SELL)
                 }) as quote:
                     quote.raise_for_status()
@@ -204,16 +208,29 @@ class JupiterTrader:
     async def _setup_position_monitoring(self, token_address: str):
         try:
             entry_price_sol = await self._get_execution_price(token_address)
-            async with aiohttp.ClientSession() as session:
-                async with session.get(
-                    "https://public-api.birdeye.so/public/price",
-                    headers={"X-API-KEY": os.getenv("BIRDEYE_API_KEY")},
-                    params={"address": "So11111111111111111111111111111111111111112"}
-                ) as resp:
-                    resp.raise_for_status()
-                    sol_usd = Decimal((await resp.json())["data"]["value"])
+            try:
+                sol_usd = Decimal(str(await asyncio.get_running_loop().run_in_executor(
+                    None, 
+                    lambda: sol_api.token.get_token_price(
+                        api_key=os.getenv("MORALIS_API_KEY"),
+                        params={"network": "mainnet", "address": "So11111111111111111111111111111111111111112"}
+                    )["usdPrice"]
+                )))
+                logger.debug(f"Using Moralis SOL price: ${sol_usd}")
+            except Exception as moralis_error:
+                logger.warning(f"Moralis failed: {str(moralis_error)}, trying Birdeye")
+                # Fallback to Birdeye
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(
+                        "https://public-api.birdeye.so/public/price",
+                        headers={"X-API-KEY": os.getenv("BIRDEYE_API_KEY")},
+                        params={"address": "So11111111111111111111111111111111111111112"}
+                    ) as resp:
+                        resp.raise_for_status()
+                        sol_usd = Decimal(str((await resp.json())["data"]["value"]))
+                logger.debug(f"Using Birdeye SOL price: ${sol_usd}")
+            
             entry_price_usd = entry_price_sol * sol_usd
-
             await self.monitor.start_monitoring(
                 token_address=token_address,
                 entry_price=entry_price_usd,
