@@ -1,17 +1,1 @@
-2025-04-03 07:54:55,899 - trader - INFO - 🚀 Trading Bot Active
-2025-04-03 08:25:18,983 - trader - INFO - 🚀 Trading Bot Active
-2025-04-03 08:25:32,770 - trader - CRITICAL - Bot startup failed: Cannot close a running event loop
-Traceback (most recent call last):
-  File "/workspaces/slpytrdr/tentwentybot/tentwentybot.py", line 297, in main
-    await app.run_polling()
-          ^^^^^^^^^^^^^^^^^
-  File "/usr/local/python/3.12.1/lib/python3.12/site-packages/telegram/ext/_application.py", line 832, in run_polling
-    return self.__run(
-           ^^^^^^^^^^^
-  File "/usr/local/python/3.12.1/lib/python3.12/site-packages/telegram/ext/_application.py", line 1072, in __run
-    loop.close()
-  File "/usr/local/python/3.12.1/lib/python3.12/asyncio/unix_events.py", line 68, in close
-    super().close()
-  File "/usr/local/python/3.12.1/lib/python3.12/asyncio/selector_events.py", line 101, in close
-    raise RuntimeError("Cannot close a running event loop")
-RuntimeError: Cannot close a running event loop
+
